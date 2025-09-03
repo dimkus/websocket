@@ -6,6 +6,7 @@ package websocket
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -1096,6 +1097,47 @@ func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
 	}
 	p, err = ioutil.ReadAll(r)
 	return messageType, p, err
+}
+
+// bufferPool is a pool for reusing *bytes.Buffer buffers.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		// Pre-allocate a buffer with a certain capacity, e.g., 4KB.
+		// This helps avoid allocations for most messages.
+		return bytes.NewBuffer(make([]byte, 0, 4096))
+	},
+}
+
+// ReadMessageWithPool reads a message from the WebSocket using a buffer from a sync.Pool.
+// It takes a closure that will be called with the message bytes.
+// After the closure is executed, the buffer is automatically returned to the pool.
+// The function name reflects the use of sync.Pool.
+//
+// Important: The p []byte slice passed to the closure is only valid for the duration of the closure's execution.
+// Do not store or use it after the closure returns, as the underlying buffer will be reused.
+func (c *Conn) ReadMessageWithPool(fn func(messageType int, p []byte)) error {
+	messageType, r, err := c.NextReader()
+	if err != nil {
+		return err
+	}
+
+	// Get a buffer from the pool
+	buf := bufferPool.Get().(*bytes.Buffer)
+	// Reset the buffer's state before use
+	buf.Reset()
+
+	// Ensure the buffer is returned to the pool after the function completes
+	defer bufferPool.Put(buf)
+
+	// Read data into the buffer
+	if _, err := io.Copy(buf, r); err != nil {
+		return err
+	}
+
+	// Call the closure with the data
+	fn(messageType, buf.Bytes())
+
+	return nil
 }
 
 // SetReadDeadline sets the read deadline on the underlying network connection.
